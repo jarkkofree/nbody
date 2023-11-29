@@ -15,8 +15,11 @@ fn main() {
         .run();
 }
 
+const G: f64 = 9.0e-1; // Gravitational constant
 const DENSITY: f64 = 0.24; // Density in kg/m^3, assuming water
-const EDGE: f64 = 1500.0;
+const EDGE: f64 = 500.0;
+const CENTRAL_MASS: f64 = 10000.0;
+const NBODIES: usize = 1000;
 
 fn get_size(mass: f64) -> f64 {
     ((3.0 * mass) / (4.0 * std::f64::consts::PI * DENSITY)).powf(1.0 / 3.0)
@@ -38,9 +41,11 @@ fn setup_system (
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    // Spawn camera
     commands.spawn(Camera2dBundle::default());
 
-    let segments = 100; // Increase for a smoother circle
+    // Spawn visual ring for edge of universe
+    let segments = 64;
     let mut positions = Vec::new();
     let mut indices = Vec::new();
 
@@ -62,18 +67,17 @@ fn setup_system (
         ..default()
     });
 
-    let central_mass = 10000.0;
-    let total_bodies = 5000;
 
+    // Spawn central mass
     commands.spawn((
         Body {
             vel: DVec2 { x: 0.0, y: 0.0 },
             pos: DVec2 { x: 0.0, y: 0.0 },
-            mass: central_mass,
+            mass: CENTRAL_MASS,
             dead: false,
         },
         MaterialMesh2dBundle {
-            mesh: meshes.add(shape::Circle::new(get_size(central_mass) as f32).into()).into(),
+            mesh: meshes.add(shape::Circle::new(get_size(CENTRAL_MASS) as f32).into()).into(),
             material: materials.add(ColorMaterial::from(Color::RED)),
             transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
             ..default()
@@ -81,10 +85,10 @@ fn setup_system (
         CentralMass,
     ));
 
-
+    // Spawn body positions, velocities, and meshes
     let body_mass = 1.0;
     let size = get_size(body_mass) as f32;
-    let offset = get_size(central_mass) * 4.0;
+    let offset = get_size(CENTRAL_MASS) * 4.0;
     let spawn_radius = EDGE - 50.0; // Outer radius for spawning
     let mut rng = rand::thread_rng();
     
@@ -93,7 +97,7 @@ fn setup_system (
     let mut velocities = Vec::new();
     
     // Step 1: Generate all positions
-    for _ in 0..total_bodies {
+    for _ in 0..NBODIES {
         // Generate position
         let angle = rng.gen::<f64>() * 2.0 * std::f64::consts::PI;
         let radius_squared = rng.gen::<f64>() * (spawn_radius.powi(2)) + offset.powi(2);
@@ -107,14 +111,14 @@ fn setup_system (
     
     // Step 2: Generate all velocities
 
-    let mut gravitational_forces = vec![DVec2::new(0.0, 0.0); total_bodies];
+    let mut gravitational_forces = vec![DVec2::new(0.0, 0.0); NBODIES];
 
     // Calculate gravitational forces
     for (i, pos_i) in positions.iter().enumerate() {
         // Force from the central mass
         let direction_to_central_mass = -(*pos_i); // Direction to the central mass (origin)
         let distance_to_central_mass_squared = direction_to_central_mass.length_squared();
-        let central_mass_force_magnitude = G * central_mass * body_mass / distance_to_central_mass_squared;
+        let central_mass_force_magnitude = G * CENTRAL_MASS * body_mass / distance_to_central_mass_squared;
         gravitational_forces[i] += direction_to_central_mass.normalize() * central_mass_force_magnitude;
     
         // Forces from other bodies
@@ -161,8 +165,6 @@ fn setup_system (
     }
     
 }
-
-const G: f64 = 9.0e-1; // Gravitational constant
 
 fn physics_system(
     mut commands: Commands,
