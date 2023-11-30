@@ -5,36 +5,61 @@ use rand::Rng;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_systems(Startup, setup_system)
+        .add_systems(Startup, (
+            setup_system,
+            spawn_bodies_system,
+        ))
         .add_systems(Update, (
             physics_system,
             move_system.after(physics_system),
             cull_system.after(move_system),
-
         ))
         .run();
 }
 
-const G: f64 = 9.0e-1; // Gravitational constant
-const DENSITY: f64 = 0.24; // Density in kg/m^3, assuming water
-const EDGE: f64 = 500.0;
-const CENTRAL_MASS: f64 = 10000.0;
-const NBODIES: usize = 1000;
-
-fn get_size(mass: f64) -> f64 {
-    ((3.0 * mass) / (4.0 * std::f64::consts::PI * DENSITY)).powf(1.0 / 3.0)
-}
+const G: f64 = 9.0; // Gravitational constant
+const DENSITY: f64 = 0.01; // Used to calculate size of bodies, and therefore collision range
+const EDGE: f64 = 1500.0; // Extent that bodies can be spawned into, and distance when bodies will be culled
+const CENTRAL_MASS: f64 = 10000.0; // Mass of star
+const NBODIES: usize = 3000; // Number of non-star bodies
+const BODY_MASS: f64 = 1.0;
 
 #[derive(Component, Copy, Clone)]
 struct Body {
     vel: DVec2,
     pos: DVec2,
+    size: f64,
     mass: f64,
     dead: bool,
 }
 
-#[derive(Component, Copy, Clone)]
-struct CentralMass;
+impl Body {
+    fn new(vel: DVec2, pos: Option<DVec2>, mass: f64) -> Body {
+        let default_pos = DVec2::new(0.0, 0.0); // Replace with your default origin
+        let size = ((3.0 * mass) / (4.0 * std::f64::consts::PI * DENSITY)).powf(1.0 / 3.0);
+
+        Body {
+            vel,
+            pos: pos.unwrap_or(default_pos),
+            size,
+            mass,
+            dead: false,
+        }
+    }
+}
+
+fn get_size(mass: f64) -> f64 {
+    ((3.0 * mass) / (4.0 * std::f64::consts::PI * DENSITY)).powf(1.0 / 3.0)
+}
+
+#[derive(Component)]
+struct Cull(Reason);
+
+#[derive(Debug)]
+enum Reason {
+    Collision,
+    Escape,
+}
 
 fn setup_system (
     mut commands: Commands,
@@ -44,7 +69,7 @@ fn setup_system (
     // Spawn camera
     commands.spawn(Camera2dBundle::default());
 
-    // Spawn visual ring for edge of universe
+    // Spawn visual ring for EDGE of universe
     let segments = 64;
     let mut positions = Vec::new();
     let mut indices = Vec::new();
@@ -54,8 +79,7 @@ fn setup_system (
         positions.push([EDGE as f32 * angle.cos(), EDGE as f32 * angle.sin(), 0.0]);
         indices.push(i);
     }
-    // Connect the last point to the first
-    indices.push(0);
+    indices.push(0); // Connect the last point to the first
 
     let mut ring = Mesh::new(bevy::render::render_resource::PrimitiveTopology::LineStrip);
     ring.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
@@ -66,28 +90,26 @@ fn setup_system (
         material: materials.add(ColorMaterial::from(Color::WHITE)),
         ..default()
     });
+}
 
-
+fn spawn_bodies_system (
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     // Spawn central mass
     commands.spawn((
-        Body {
-            vel: DVec2 { x: 0.0, y: 0.0 },
-            pos: DVec2 { x: 0.0, y: 0.0 },
-            mass: CENTRAL_MASS,
-            dead: false,
-        },
+        Body::new(DVec2 { x: 0.0, y: 0.0 }, None, CENTRAL_MASS),
         MaterialMesh2dBundle {
             mesh: meshes.add(shape::Circle::new(get_size(CENTRAL_MASS) as f32).into()).into(),
-            material: materials.add(ColorMaterial::from(Color::RED)),
+            material: materials.add(ColorMaterial::from(Color::BLACK)),
             transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
             ..default()
         },
-        CentralMass,
     ));
 
     // Spawn body positions, velocities, and meshes
-    let body_mass = 1.0;
-    let size = get_size(body_mass) as f32;
+    let size = get_size(BODY_MASS) as f32;
     let offset = get_size(CENTRAL_MASS) * 4.0;
     let spawn_radius = EDGE - 50.0; // Outer radius for spawning
     let mut rng = rand::thread_rng();
@@ -118,7 +140,7 @@ fn setup_system (
         // Force from the central mass
         let direction_to_central_mass = -(*pos_i); // Direction to the central mass (origin)
         let distance_to_central_mass_squared = direction_to_central_mass.length_squared();
-        let central_mass_force_magnitude = G * CENTRAL_MASS * body_mass / distance_to_central_mass_squared;
+        let central_mass_force_magnitude = G * CENTRAL_MASS * BODY_MASS / distance_to_central_mass_squared;
         gravitational_forces[i] += direction_to_central_mass.normalize() * central_mass_force_magnitude;
     
         // Forces from other bodies
@@ -126,7 +148,7 @@ fn setup_system (
             if i != j {
                 let direction = *pos_j - *pos_i;
                 let distance_squared = direction.length_squared();
-                let force_magnitude = G * body_mass * body_mass / distance_squared;
+                let force_magnitude = G * BODY_MASS * BODY_MASS / distance_squared;
                 gravitational_forces[i] += direction.normalize() * force_magnitude;
             }
         }
@@ -137,7 +159,7 @@ fn setup_system (
         let force_magnitude = force.length();
         
         // Calculate the required speed for a stable orbit considering the net force
-        let required_speed = (force_magnitude * distance / body_mass).sqrt();
+        let required_speed = (force_magnitude * distance / BODY_MASS).sqrt();
     
         // Ensure the velocity is perpendicular to the net force vector
         let vel_direction = DVec2::new(-force.y, force.x).normalize();
@@ -149,12 +171,7 @@ fn setup_system (
     // Step 3: Spawn each body using the stored positions and velocities
     for (pos, vel) in positions.iter().zip(velocities.iter()) {
         commands.spawn((
-            Body {
-                vel: *vel,
-                pos: *pos,
-                mass: body_mass,
-                dead: false,
-            },
+            Body::new(*vel,Some(*pos),BODY_MASS),
             MaterialMesh2dBundle {
                 mesh: meshes.add(shape::Circle::new(size).into()).into(),
                 material: materials.add(ColorMaterial::from(Color::BLACK)),
@@ -168,23 +185,26 @@ fn setup_system (
 
 fn physics_system(
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Body, Option<&CentralMass>)>,
+    mut q: Query<(Entity, &mut Body, &mut Transform)>,
     time: Res<Time>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let mut iter = q.iter_combinations_mut();
-    while let Some([(entity_a, mut body_a, mass_a), (entity_b, mut body_b, mass_b)]) = iter.fetch_next() {
+    while let Some([(
+        _entity_a,
+        mut body_a,
+        mut transform_a,
+    ), (
+        entity_b,
+        mut body_b,
+        mut _transform_b,
+    )]) = iter.fetch_next() {
         if !body_a.dead && !body_b.dead {
             let direction = body_b.pos - body_a.pos;
             let distance = direction.length();
 
             // Skip the force calculation if bodies are "colliding"
-            if distance < (get_size(body_a.mass) + get_size(body_b.mass)) {
-                commands.entity(entity_a).insert(Cull(Reason::Collision));
+            if distance < (body_a.size + body_b.size) {
                 commands.entity(entity_b).insert(Cull(Reason::Collision));
-
-                body_a.dead = true;
                 body_b.dead = true;
 
                 let new_mass = body_a.mass + body_b.mass;
@@ -195,28 +215,19 @@ fn physics_system(
                 let weighted_vel1 = body_a.vel * body_a.mass;
                 let weighted_vel2 = body_b.vel * body_b.mass;
 
-                
-                let is_central_mass = mass_a.is_some() || mass_b.is_some();
-                let color = if is_central_mass { Color::RED } else { Color::BLACK };
-            
-                let e = commands.spawn((
-                    Body {
-                        vel: (weighted_vel1 + weighted_vel2) / new_mass,
-                        pos: new_pos,
-                        mass: new_mass,
-                        dead: false,
-                    },
-                    MaterialMesh2dBundle {
-                        mesh: meshes.add(shape::Circle::new(get_size(new_mass) as f32).into()).into(),
-                        material: materials.add(ColorMaterial::from(color)),
-                        transform: Transform::from_translation(Vec3::new(new_pos.x as f32, new_pos.y as f32, 0.0)),
-                        ..default()
-                    },
-                )).id();
+                let scale = get_size(new_mass) / body_a.size;
 
-                if is_central_mass {
-                    commands.entity(e).insert(CentralMass);
-                }
+                body_a.vel = (weighted_vel1 + weighted_vel2) / new_mass;
+                body_a.pos = new_pos;
+                body_a.size = get_size(new_mass);
+                body_a.mass = new_mass;
+
+                transform_a.translation.x = new_pos.x as f32;
+                transform_a.translation.y = new_pos.y as f32;
+
+                let old_scale = transform_a.scale;
+                transform_a.scale *= Vec3::splat(scale as f32);
+                if transform_a.scale.x < old_scale.x { println!("old scale {:?}, new scale {:?}", old_scale, transform_a.scale)};
 
                 continue;
             }
@@ -237,33 +248,25 @@ fn physics_system(
     }
 }
 
-#[derive(Debug)]
-enum Reason {
-    Collision,
-    Escape,
-}
-
-#[derive(Component)]
-struct Cull(Reason);
-
 fn move_system(
     mut commands: Commands,
     mut q: Query<(Entity, &mut Body, &mut Transform)>,
     time: Res<Time>,
 ) {
     for (e, mut body, mut transform) in &mut q {
-        if !body.dead {
+        if body.dead {
+            continue;
+        }
 
-            let vel = body.vel;
-            body.pos += vel * time.delta_seconds_f64();
-            transform.translation = Vec3 { x: body.pos.x as f32, y: body.pos.y as f32, z: 0.0 };
+        let vel = body.vel;
+        body.pos += vel * time.delta_seconds_f64();
+        transform.translation = Vec3 { x: body.pos.x as f32, y: body.pos.y as f32, z: 0.0 };
 
-            // Calculate the distance from the origin
-            let distance_from_origin = body.pos.length(); // This calculates the Euclidean distance
+        // Calculate the distance from the origin
+        let distance_from_origin = body.pos.length(); // This calculates the Euclidean distance
 
-            if distance_from_origin > EDGE {
-                commands.entity(e).insert(Cull(Reason::Escape));
-            }
+        if distance_from_origin > EDGE {
+            commands.entity(e).insert(Cull(Reason::Escape));
         }
     }
 }
