@@ -225,9 +225,7 @@ fn physics_system(
                 transform_a.translation.x = new_pos.x as f32;
                 transform_a.translation.y = new_pos.y as f32;
 
-                let old_scale = transform_a.scale;
                 transform_a.scale *= Vec3::splat(scale as f32);
-                if transform_a.scale.x < old_scale.x { println!("old scale {:?}, new scale {:?}", old_scale, transform_a.scale)};
 
                 continue;
             }
